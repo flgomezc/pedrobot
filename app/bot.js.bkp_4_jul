@@ -1,0 +1,579 @@
+//
+// This is main file containing codeme implementing the Express server and functionality for the Express echo bot.
+//
+'use strict';
+const express = require('express');
+const bodyParser = require('body-parser');
+const request = require('request');
+const path = require('path');
+
+var messengerButton = "<html><head><title>PedroBot</title></head><body><h1>PedroBot</h1>"
+messengerButton += "Pan recien horneado a domicilio! <div class=\"glitchButton\" "
+messengerButton += " style=\"position:fixed;top:20px;right:20px;\"></div></body></html>";
+
+// Para anadir paquetes adicionales
+var wildcard = require('wildcard'); // Wildcard permite hacer matching tipo 'Hola Pedro' === 'Hola*' ==>true.
+var coverage = require('./coverage.js')
+var mySQLhandler = require('./mySQLhandler.js')
+
+var sessions = {}; // Este es un JSON object donde se llevara un registro de las sesiones abiertas.
+
+var user_name;
+var user_address;
+var user_combo;
+var user_combo_quantity;
+
+
+// The rest of the code implements the routes for our Express server.
+let app = express();
+
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({
+  extended: true
+}));
+
+// Webhook validation
+app.get('/webhook', function(req, res) {
+  if (req.query['hub.mode'] === 'subscribe' &&
+      req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) {
+    console.log("Validating webhook");
+    res.status(200).send(req.query['hub.challenge']);
+  } else {
+    console.error("Failed validation. Make sure the validation tokens match.");
+    res.sendStatus(403);          
+  }
+});
+
+// Display the web page
+app.get('/', function(req, res) {
+  res.writeHead(200, {'Content-Type': 'text/html'});
+  res.write(messengerButton);
+  res.end();
+});
+
+
+// Message processing
+app.post('/webhook', function (req, res) {
+  console.log(req.body);
+  var data = req.body;
+
+  // Make sure this is a page subscription
+  if (data.object === 'page') {
+    
+    // Iterate over each entry - there may be multiple if batched
+    data.entry.forEach(function(entry) {
+      var pageID = entry.id;
+      var timeOfEvent = entry.time;
+
+      // Iterate over each messaging event
+      entry.messaging.forEach(function(event) {
+        if (event.message) {
+          receivedMessage(event);
+        } else if (event.postback) {
+          receivedPostback(event);   
+        } else {
+          console.log("Webhook received unknown event: ", event);
+        }
+      });
+    });
+
+    // Assume all went well.
+    //
+    // You must send back a 200, within 20 seconds, to let us know
+    // you've successfully received the callback. Otherwise, the request
+    // will time out and we will keep trying to resend.
+    res.sendStatus(200);
+  }
+});
+
+// Incoming events handling
+function receivedMessage(event) {
+  var senderID = event.sender.id;
+  var recipientID = event.recipient.id;
+  var timeOfMessage = event.timestamp;
+  var message = event.message;
+   
+  
+  console.log("Received message for user %d and page %d at %d with message:", 
+    senderID, recipientID, timeOfMessage);
+  console.log(JSON.stringify(message));
+
+  var messageId          = message.mid;
+  var messageText        = message.text;
+  var messageAttachments = message.attachments;  
+  //var messageLocation    = message.location
+  
+  // DE LA LOGICA ASINCRONA
+  // Con esta parte del codigo se verifica si el usuario ha interactuado con nosotros antes
+  // var sessionId = findOrCreateSession(senderID);
+  // var session = sessions[sessionId]
+  
+  var sessionsHandler = require('./sessionsHandler.js')
+  
+  //session.context.yourfield = 10
+  console.log('Asi esta el objeto sessions', JSON.stringify(sessions)); 
+  
+  
+  if (messageText) {
+    // If we receive a text message, check to see if it matches a keyword
+    // and send back the template example. Otherwise, just echo the text we received.
+    switch (messageText) {
+
+      // Mensaje de Bienvenida. Almacena temporalmente el nombre
+      // Desde esta función pregunta el combo que quiere pedir el cliente.  
+      case 'holi':case 'holis':case 'olis': case 'Olis':case 'Holis': case'ola': case'Ola':case 'buenos dias': 
+      case 'Buenos días': case 'buenos días': case 'buenas tardes':case 'Buenas Tardes': case 'buenas': case 'buenas!':
+      case 'buenas!!':case 'Buenas':case 'Buenas!':case 'Buenas!!': case 'Buenas!!!': case 'Hola Don Pedro': 
+      case 'hola don pedro': case 'hola don Pedro':case 'hey': case 'Hey': case 'Hi': case 'hi': 
+      case 'alo': case 'Alo': case 'olas': case 'Olas': case 'Holas':
+      case 'Hola': case 'hola': case 'holas': 
+      case 'Quibo': case 'quiubo': case 'Hola Pedro': case 'hola pedro':  
+
+        getUserInfo(senderID);
+        break;
+        
+      case 'user':
+        mySQLhandler.IsUserInDatabase(senderID, function(result){
+          console.log('bot.js ', result);
+          sendTextMessage(senderID, JSON.stringify(result) );
+        } ) ;
+        // sendTextMessage(senderID, JSON.stringify(algo) );
+        break;
+               
+      case 'google': askGoogle(); break;
+        
+      case 'u':        GivemeYourLocation(senderID);        break;
+    
+      case '1':        user_combo_quantity = 1;        showOrder(senderID);        break;        
+      case '2':        user_combo_quantity = 2;        showOrder(senderID);        break;        
+      case '3':        user_combo_quantity = 3;        showOrder(senderID);        break;        
+      case '4':        user_combo_quantity = 4;        showOrder(senderID);        break;        
+      case '5':        user_combo_quantity = 5;        showOrder(senderID);        break;
+
+      case 'combos':
+        mySQLhandler.AskForCombosInZone(function(results){ console.log(results) });
+        break;
+        
+      case 'Gracias': case 'gracias': case 'Gracias!': case 'gracias!': case 'Muchas gracias': case 'Muchas Gracias!': 
+      case '¡Gracias!':
+        sendTextMessage(senderID, "Es un gusto servirte!");
+        
+      default:
+        user_address = messageText;
+        sendTextMessage(senderID, '\n^___^\n\nGracias por tu compra!\nTe avisaremos cuando tu pedido salga del horno.');
+        console.log( user_name, user_address, user_combo, user_combo_quantity );
+        //mySQLhandler.SendOrder( user_name, user_address, user_combo, user_combo_quantity );
+        break;
+
+    }
+  } else if (messageAttachments) {
+    
+    if(messageAttachments[0].type === 'location'){
+      var lat  = messageAttachments[0].payload.coordinates.lat;
+      var long = messageAttachments[0].payload.coordinates.long;
+      
+      session.context.coord_lat = lat;
+      session.context.coord_long= long;
+
+      var zone = coverage.isItUnderCover(lat, long);
+      
+      if( zone ){
+        sendTextMessage(senderID, "Perfecto! Estás dentro de nuestra zona de cobertura");
+        //session.context.coverage = true;
+        //session.context.zone     = zone;
+        
+        mySQLhandler.AskForCombosInZone(zone, function(results){ 
+          sendTextMessage(senderID, 'Estos son los productos en tu zona\n' + JSON.stringify(results)) });
+        
+      }  else {
+        sendTextMessage(senderID, "Lo sentimos, estás fuera de la zona de cobertura u_u");
+        session.context.coverage = false;
+        session.context.zone     = 0;
+      }
+      
+    } else {
+      sendTextMessage(senderID, "Message with attachment received");
+    }
+
+    console.log('Asi queda el objeto sessions', JSON.stringify(sessions)); 
+  }
+}
+
+
+function givemeYourAddress(recipientId) {
+  var message = 'Perfecto. Para terminar dime en qué dirección quieres que entreguemos tu pedido';
+  sendTextMessage(recipientId, message);
+}
+
+function askGoogle() {
+  var request = require('request');
+  request('http://www.google.com', function (error, response, body) {
+  console.log('error:', error); // Print the error if one occurred 
+  console.log('statusCode:', response && response.statusCode); 
+    // Print the response status code if a response was received 
+  console.log('body:', body); // Print the HTML for the Google homepage. 
+  });
+  
+}
+
+
+function receivedPostback(event) {
+  var senderID = event.sender.id;
+  //getUserInfo(senderID);
+  var recipientID = event.recipient.id;
+  var timeOfPostback = event.timestamp;
+
+  // The 'payload' param is a developer-defined field which is set in a postback 
+  // button for Structured Messages. 
+  var payload = event.postback.payload;
+
+  console.log("Received postback for user %d and page %d with payload '%s' " + 
+    "at %d", senderID, recipientID, payload, timeOfPostback);
+
+  // When a postback is called, we'll send a message back to the sender to 
+  // let them know it was successful
+  //sendTextMessage(senderID, payload );
+  
+  switch(payload){
+    case 'GET_STARTTED_PAYLOAD':
+      getUserInfo(recipientID);
+      break;
+      
+    case 'USER_STARTS':
+      chooseYourCombo(senderID);
+      break;
+      
+    case 'ACCOUNT_CHECK_COVERAGE':
+      GivemeYourLocation(senderID);
+      break;
+      
+    case 'ACCOUNT_CHECK_ADDRESS':
+      isThisYourAddress();
+      break;
+      
+      
+    case 'COMBO_PAN_FRANCES':
+      user_combo = 'FRANCES';
+      chooseQuantity(senderID);
+      break;
+      
+    case 'COMBO_PAN_ROLLITO':
+      user_combo = 'ROLLITO';
+      console.log( "Combo pan Rollito");
+      chooseQuantity(senderID);
+      break;
+      
+    case 'COMBO_CROISSANT':
+      user_combo = 'CROISSANT';
+      console.log( "Combo Croissant");
+      chooseQuantity(senderID);
+      break;
+
+      
+    case 'USER_ORDERED':
+      sendTextMessage(senderID, '\n^___^\n\nGracias por tu compra!\nTe avisaremos cuando tu pedido salga del horno.');
+      break;
+      
+    case 'USER_LOCATION':
+      mySQLhandler.AskForCombosInZone();
+      break;
+      
+      }
+}
+
+////////////////////////////////////////////////////
+// Interactua con la API de facebook.
+//  Env'ia los mensajes (de todo tipo)
+////////////////////////////////////////////////////
+function callSendAPI(messageData) {
+  request({
+    uri: 'https://graph.facebook.com/v2.6/me/messages',
+    qs: { access_token: process.env.PAGE_ACCESS_TOKEN },
+    method: 'POST',
+    json: messageData
+
+  }, function (error, response, body) {
+    if (!error && response.statusCode == 200) {
+    
+      var recipientId = body.recipient_id;
+      var messageId = body.message_id;
+
+      console.log("Successfully sent generic message with id %s to recipient %s", 
+        messageId, recipientId);
+    } else {
+      console.error("Unable to send message.");
+      console.error(response);
+      console.error(error);
+    }
+  });  
+}
+
+// Set Express to listen out for HTTP requests
+var server = app.listen(process.env.PORT || 3000, function () {
+  console.log("Listening on port %s", server.address().port);
+});
+
+//////////////////////////
+// Sending helpers
+//////////////////////////
+
+function sendTextMessage(recipientId, messageText) {
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    message: {
+      text: messageText
+    }
+  };
+
+  callSendAPI(messageData);
+}
+
+function sendButtonMessage(recipientId, messageText, ButtonTitle, Payload) {
+  var message = {
+                  "recipient":{
+                    "id":recipientId
+                  },
+                  "message":{
+                    "attachment":{
+                      "type":"template",
+                      "payload":{
+                        "template_type":"button",
+                        "text":messageText,
+                        "buttons":[
+                          {
+                            "type":"postback",
+                            "title":ButtonTitle,
+                            "payload":Payload
+                          },
+                        ]
+                      }
+                    }
+                  }
+                }
+  callSendAPI(message);
+}
+
+function sendTwoButtonMessage(recipientId, messageText, ButtonTitle1, Payload1, ButtonTitle2, Payload2) {
+  var message = {
+                  "recipient":{
+                    "id":recipientId
+                  },
+                  "message":{
+                    "attachment":{
+                      "type":"template",
+                      "payload":{
+                        "template_type":"button",
+                        "text":messageText,
+                        "buttons":[
+                          {
+                            "type":"postback",
+                            "title":ButtonTitle1,
+                            "payload":Payload1
+                          },{
+                            "type":"postback",
+                            "title":ButtonTitle2,
+                            "payload":Payload2
+                          },
+                        ]
+                      }
+                    }
+                  }
+                }
+  callSendAPI(message);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//   Funciones personalizadas
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+function GivemeYourLocation(recipientId){
+  var messageData = {
+    recipient: {id: recipientId},
+    message: { text:"Dame tu ubicacion porfis",
+              quick_replies:[{content_type:'location', payload:"USER_LOCATION"}]}
+      };
+  
+  callSendAPI(messageData);
+}
+
+
+////////////////////////////////
+// Mensaje de bienvenida.
+// Saluda al usuario y dispara  el proceso de compra al 
+// presionar el boton 'QUIERO PEDIR' con payload="USER_STARTS"
+////////////////////////////
+
+function getUserInfo(userId){
+  request({
+      uri: 'https://graph.facebook.com/v2.6/'+ userId +'?fields=first_name,last_name,profile_pic,locale,timezone,gender',
+      method: 'GET',
+      qs: { access_token: process.env.PAGE_ACCESS_TOKEN }
+    }, function (error, response, body) {
+      
+    if (!error && response.statusCode == 200) {
+      var userJSON = JSON.parse(body);  
+      console.log("User Info ", userJSON);
+      var user_first_name = userJSON.first_name;
+      user_name = user_first_name;
+      
+      var messageText = 'Hola '+ user_name + '! \nSoy Pedro y puedo ofrecerte pan recién horneado en tu oficina.';
+      sendButtonMessage(userId, messageText, "Quiero pedir", "USER_STARTS");
+    } else {
+      console.error(userId, 'Unable to get User Data.');
+      console.error(response);
+      console.error(error);
+      }
+    });   
+}
+
+
+////////////////////////////////
+// EL usuario escoge el combo que quiere pedir.
+// payload="COMBO_PAN_FRANCES" o "COMBO_PAN_ROLLITO"
+////////////////////////////
+function chooseYourCombo(recipientId) {
+  var messageData = {
+    recipient: {
+      id: recipientId
+    },
+    message: {
+      attachment: {
+        type: "template",
+        payload: {
+          template_type: "generic",
+          elements: [{
+            title: "Francés",
+            subtitle: "10 unidades de pan Francés.\n$5000.\nSe entrega entre 8:30am y 9:20am",
+            item_url: "",   
+            image_url: "https://cdn.glitch.com/09ad17c7-0c51-4ff3-9eb9-150258262831%2Ffrances.jpg?1498867448988",
+            buttons: [{
+              type: "postback",
+              title: "Quiero este combo!",
+              payload: "COMBO_PAN_FRANCES",
+            },],
+          }, {
+            title: "Rollito",
+            subtitle:"10 unidades de pan Rollito.\n$5000.\nSe entrega entre 9:30am y 10:30am",
+            item_url:"",               
+            image_url: "https://cdn.glitch.com/09ad17c7-0c51-4ff3-9eb9-150258262831%2Frollito.jpg?1498867452257",
+            buttons: [{
+              type: "postback",
+              title: "Quiero este combo!",
+              payload: "COMBO_PAN_ROLLITO",
+              },],
+          }, {
+            title: "Croissant",
+            subtitle:"3 unidades de Croissant.\n$5000.\nSe entrega entre 10:00am y 11:00am",
+            item_url:"",               
+            image_url: "https://cdn.glitch.com/09ad17c7-0c51-4ff3-9eb9-150258262831%2Fcroissant.jpg?1498867780880",
+            buttons: [{
+              type: "postback",
+              title: "Quiero este combo!",
+              payload: "COMBO_CROISSANT",
+              },],
+            },
+           ]
+          }
+        }
+      }
+    }
+
+  callSendAPI(messageData);
+}
+
+
+/////////////////////////////////////////////
+// Una vez el usuario ha elegido el combo
+// elige la cantidad de combos
+/////////////////////////////////////////////
+
+function chooseQuantity(recipientId){
+  console.log("Pidiendo cantidad de combos");
+  var messageData = {
+                      "recipient":{
+                      "id":recipientId
+                    },
+                    "message":{
+                      "text":"Cuántos combos quieres ordenar?",
+                      "quick_replies":[
+                        {"content_type":"text",
+                          "title":"1",
+                          "payload":"QT_1"
+                        },{
+                          "content_type":"text",
+                          "title":"2",
+                          "payload":"QT_2"
+                        },{
+                          "content_type":"text",
+                          "title":"3",
+                          "payload":"QT_3"
+                        },{
+                          "content_type":"text",
+                          "title":"4",
+                          "payload":"QT_4"
+                        },{
+                          "content_type":"text",
+                          "title":"5",
+                          "payload":"QT_5"
+                        }
+                      ]
+                    }
+                  }
+  callSendAPI(messageData);
+}
+
+////////////////////////////////////////////////
+// Mostrar la orden de compra
+////////////////////////////////////////////////
+
+function showOrder(recipientId) {
+  console.log("Mostrar orden de pedido");
+  var messageText = 'Listo!\nEsta es tu orden de compra:\n'+ user_name +'\n';
+  messageText += 'COMBO '+ user_combo +'\n   x '+ user_combo_quantity;
+  messageText += '\nTotal =' + 4500*user_combo_quantity ;
+  
+  sendTextMessage(recipientId, messageText);
+  
+  messageText = 'Ahora dime la dirección donde quieres que entreguemos tu pedido';
+  sendTextMessage(recipientId, messageText);
+  
+  //  setTimeout( sendTextMessage(recipientId, messageText), 500); // delay of 500ms
+}
+
+
+/////////////////////////////////////////////
+// "Remember the 4th of november".
+// Handling sessions
+/////////////////////////////////////////////
+/**
+function findOrCreateSession (fbID){
+    var sessionId;
+    console.log('Session ID target:', fbID);
+    console.log('Active Sessions:', sessions);
+    // Let's see if we already have a session for the user fbid
+    Object.keys(sessions).forEach(k => {
+      if (sessions[k].fbID === fbID) {
+         // Yep, got it!
+         sessionId = k;
+      }
+    });
+    if (!sessionId) {
+      // No session found for user fbid, let's create a new one
+      sessionId = new Date().toISOString();
+      mySQLhandler.IsUserInDatabase(fbID, function(result){
+        console.log('Test result.lengh: ' + result.lengh);
+        if (result.lengh === undefined) {
+          console.log('hola mundo');
+        } 
+      }
+                                   ) ;
+      
+      sessions[sessionId] = {fbID: fbID, context: {}};
+    }
+    return sessionId;
+}  
+**/
